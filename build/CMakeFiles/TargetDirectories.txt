@@ -1,0 +1,3 @@
+E:/Tiny/niwudile/build/CMakeFiles/niwudile.dir
+E:/Tiny/niwudile/build/CMakeFiles/ALL_BUILD.dir
+E:/Tiny/niwudile/build/CMakeFiles/ZERO_CHECK.dir
