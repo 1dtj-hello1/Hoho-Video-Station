@@ -9,6 +9,9 @@
     <CustomBuild Include="E:\Tiny\niwudile\CMakeLists.txt" />
   </ItemGroup>
   <ItemGroup>
+    <Natvis Include="E:\huangjin\vcpkg\installed\x64-windows\share\boost-1.90.0\assert\boost_assert.natvis" />
+  </ItemGroup>
+  <ItemGroup>
     <Filter Include="Source Files">
       <UniqueIdentifier>{2188F1A8-20E7-3463-9AAF-919C29D0D31D}</UniqueIdentifier>
     </Filter>
