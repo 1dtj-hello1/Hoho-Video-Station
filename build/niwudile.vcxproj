@@ -88,7 +88,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <AdditionalIncludeDirectories>E:\Tiny\niwudile;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <AdditionalOptions>%(AdditionalOptions) /external:I "E:/huangjin/vcpkg/installed/x64-windows/include" /bigobj /Zm2000</AdditionalOptions>
+      <AdditionalOptions>%(AdditionalOptions) /external:I "E:/huangjin/vcpkg/installed/x64-windows/include" -g -O0 /bigobj /Zm2000</AdditionalOptions>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <BufferSecurityCheck></BufferSecurityCheck>
@@ -426,6 +426,8 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="E:\Tiny\niwudile\main.cpp" />
+    <ClCompile Include="E:\Tiny\niwudile\upload_videos.cpp" />
+    <ClInclude Include="E:\Tiny\niwudile\upload_videos.hpp" />
     <Natvis Include="E:\huangjin\vcpkg\installed\x64-windows\share\boost-1.90.0\assert\boost_assert.natvis">
     </Natvis>
   </ItemGroup>

@@ -4,6 +4,14 @@
     <ClCompile Include="E:\Tiny\niwudile\main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="E:\Tiny\niwudile\upload_videos.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="E:\Tiny\niwudile\upload_videos.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="E:\Tiny\niwudile\CMakeLists.txt" />
@@ -12,6 +20,9 @@
     <Natvis Include="E:\huangjin\vcpkg\installed\x64-windows\share\boost-1.90.0\assert\boost_assert.natvis" />
   </ItemGroup>
   <ItemGroup>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{5B6AB87E-BE04-39DE-848A-83AD6A75CA0A}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Source Files">
       <UniqueIdentifier>{2188F1A8-20E7-3463-9AAF-919C29D0D31D}</UniqueIdentifier>
     </Filter>
