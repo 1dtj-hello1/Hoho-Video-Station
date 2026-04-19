@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>登录</title>
+    <style>
+        body {
+            font-family: Arial;
+            max-width: 400px;
+            margin: 100px auto;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        input {
+            width: 100%;
+            padding: 8px;
+            margin-top: 5px;
+        }
+
+        button {
+            width: 100%;
+            padding: 10px;
+            background: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+
+        .error {
+            color: red;
+            margin-top: 10px;
+        }
+
+        .success {
+            color: green;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>登录</h1>
+    <div class="form-group">
+        <label>用户名</label>
+        <input type="text" id="username" placeholder="请输入用户名">
+    </div>
+    <div class="form-group">
+        <label>密码</label>
+        <input type="password" id="password" placeholder="请输入密码">
+    </div>
+    <button onclick="login()">登录</button>
+    <div id="message"></div>
+
+    <script>
+        async function login() {
+        const username = document.getElementById('username').value;
+        const password = document.getElementById('password').value;
+
+        try {
+        const response = await fetch('/login', {
+        method: 'POST',
+        headers: {
+        'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ username, password })
+        });
+
+        const result = await response.json();
+        const msgDiv = document.getElementById('message');
+
+        if (result.success) {
+        msgDiv.innerHTML = '<div class="success">登录成功！正在跳转...</div>';
+        setTimeout(() => {
+        window.location.href = '/upload.html';
+        }, 1000);
+        } else {
+        msgDiv.innerHTML = '<div class="error">' + result.message + '</div>';
+        }
+        } catch (error) {
+        document.getElementById('message').innerHTML = '<div class="error">请求失败</div>';
+        }
+        }
+    </script>
+</body>
+</html>

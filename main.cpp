@@ -1,4 +1,4 @@
-﻿//
+//
 // Copyright (c) 2022 Klemens D. Morgenstern (klemens dot morgenstern at gmx dot net)
 // Copyright (c) 2024 Mohammad Nejati
 //
@@ -13,14 +13,17 @@
 // Example: Advanced server, flex (plain + SSL)
 //
 //------------------------------------------------------------------------------
-
 #include "example/common/server_certificate.hpp"
+#include "upload_videos.hpp"
+
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/beast.hpp>
 #include <boost/beast/ssl.hpp>
+#include <boost/filesystem.hpp>
 #include <boost/mysql.hpp>
-#include <boost/asio/ssl.hpp>
+#include <memory>
+#include <nlohmann/json.hpp>
 
 #include <windows.h>
 #include <algorithm>
@@ -28,25 +31,132 @@
 #include <iostream>
 #include <list>
 #include <string>
+#include <unordered_map>
+#include <mutex>
 
 #include <thread>
 #include <vector>
+#include <ctime>
 
-#include <nlohmann/json.hpp>
 
 #if defined(BOOST_ASIO_HAS_CO_AWAIT)
-
 namespace beast = boost::beast;
 namespace http = beast::http;
 namespace websocket = beast::websocket;
 namespace net = boost::asio;
 namespace ssl = boost::asio::ssl;
+namespace mysql = boost::mysql;
+namespace asio = boost::asio;
 
+using tcp = boost::asio::ip::tcp;
 using executor_type = net::strand<net::io_context::executor_type>;
 using stream_type = typename beast::tcp_stream::rebind_executor<executor_type>::other;
 using acceptor_type = typename net::ip::tcp::acceptor::rebind_executor<executor_type>::other;
-
+using json = nlohmann::json;
 // Return a reasonable mime type based on the extension of a file.
+
+class SimpleDatabase {
+private:
+	asio::io_context ioc_;
+	mysql::any_connection conn_;  // 使用 any_connection
+	bool connected_ = false;
+
+public:
+	SimpleDatabase() : conn_(ioc_) {}
+	bool is_connected() const { return connected_; }
+	bool connect(const std::string& host,
+		unsigned int port,
+		const std::string& user,
+		const std::string& pass,
+		const std::string& db) {
+		try {
+			// 新版 API：使用 connect_params 结构体
+			mysql::connect_params params;
+			params.server_address = mysql::host_and_port(host, port);
+			params.username = user;
+			params.password = pass;
+			params.database = db;
+			params.ssl = mysql::ssl_mode::require;
+
+			conn_.connect(params);
+			connected_ = true;
+			printf("[数据库] 连接成功\n");
+			return true;
+		}
+		catch (const std::exception& e) {
+			printf("[数据库] 连接失败: %s\n", e.what());
+			return false;
+		}
+	}
+
+	mysql::results query(const std::string& sql) {
+		mysql::results result;
+		conn_.execute(sql, result);
+		return result;
+	}
+	template<typename... Args>
+	mysql::results query_params(const std::string& sql, Args&&... args) {
+		mysql::results result;
+		if (connected_) {
+			conn_.execute(mysql::with_params(sql, std::forward<Args>(args)...), result);
+		}
+		return result;
+	}
+
+	// 支持多个参数的参数化查询（使用可变模板）
+	template<typename... Args>
+	mysql::results query_prepared(const std::string& sql, Args&&... args) {
+		mysql::results result;
+		if (connected_) {
+			// 使用 stringstream 构建 SQL
+			std::stringstream ss;
+			size_t start = 0;
+			size_t pos = 0;
+			size_t arg_index = 0;
+
+			// 将参数放入 tuple 以便遍历
+			auto params = std::make_tuple(std::forward<Args>(args)...);
+
+			// 遍历 SQL，替换 {} 为参数值
+			while ((pos = sql.find("?", start)) != std::string::npos) {
+				ss << sql.substr(start, pos - start);
+
+				// 获取第 arg_index 个参数并转换为字符串
+				if (arg_index < sizeof...(Args)) {
+					std::string param_str = get_param_string(params, arg_index);
+					ss << "'" << param_str << "'";
+					arg_index++;
+				}
+
+				start = pos + 1;
+			}
+			ss << sql.substr(start);
+
+			conn_.execute(ss.str(), result);
+		}
+		return result;
+	}
+
+private:
+	template<size_t I = 0, typename... Tp>
+	typename std::enable_if<I == sizeof...(Tp), std::string>::type
+		get_param_string(const std::tuple<Tp...>&, int) {
+		return "";
+	}
+
+	template<size_t I = 0, typename... Tp>
+	typename std::enable_if < I < sizeof...(Tp), std::string>::type
+		get_param_string(const std::tuple<Tp...>& t, int) {
+		std::stringstream ss;
+		ss << std::get<I>(t);
+		return ss.str();
+	}
+};
+
+// 全局数据库对象
+SimpleDatabase g_db;
+// 全局数据库对象
+
 beast::string_view
 mime_type(beast::string_view path)
 {
@@ -101,16 +211,20 @@ path_cat(
 	std::string result(base);
 #ifdef BOOST_MSVC
 	char constexpr path_separator = '\\';
-	if (result.back() == path_separator)
+	if(result.back() == path_separator)
 		result.resize(result.size() - 1);
+	if (result.back() != path_separator)
+		result.push_back(path_separator);
 	result.append(path.data(), path.size());
 	for (auto& c : result)
 		if (c == '/')
 			c = path_separator;
 #else
 	char constexpr path_separator = '/';
-	if (result.back() == path_separator)
+	if(result.back() == path_separator)
 		result.resize(result.size() - 1);
+	if (result.back() != path_separator)
+		result.push_back(path_separator);
 	result.append(path.data(), path.size());
 #endif
 	return result;
@@ -132,7 +246,39 @@ bool verify_session(http::request<http::string_body>& req) {
 	return false;
 }
 
+template<class Body, class Allocator>
+http::message_generator
+handle_get_videos(
+	beast::string_view doc_root,
+	http::request<Body, http::basic_fields<Allocator>>&& req)
+{
+	http::response<http::string_body> res{ http::status::ok, req.version() };
+	res.set(http::field::content_type, "application/json");
 
+	try {
+		auto result = g_db.query("SELECT id, filename, filepath, size, created_at FROM videos ORDER BY created_at DESC");
+
+		json videos_array = json::array();
+		for (size_t i = 0; i < result.rows().size(); ++i) {
+			json video_obj;
+			video_obj["id"] = result.rows()[i][0].as_int64();
+			video_obj["filename"] = result.rows()[i][1].as_string();
+			video_obj["url"] += "/videos/";
+			video_obj["url"] += result.rows()[i][1].as_string();
+			video_obj["size"] = result.rows()[i][3].as_int64();
+			video_obj["created_at"] = result.rows()[i][4].as_string();
+			videos_array.push_back(video_obj);
+		}
+
+		res.body() = videos_array.dump();
+	}
+	catch (const std::exception& e) {
+		res.body() = R"({"error": "查询失败"})";
+	}
+
+	res.prepare_payload();
+	return res;
+}
 // 处理登录请求
 template<class Body, class Allocator>
 http::message_generator
@@ -140,71 +286,205 @@ handle_login(
 	beast::string_view doc_root,
 	http::request<Body, http::basic_fields<Allocator>>&& req)
 {
-	// 1. 解析请求体中的用户名和密码
-	// 假设前端发送的是 JSON 格式: {"username": "admin", "password": "123456"}
-	// 或者表单格式: username=admin&password=123456
+	http::response<http::string_body> res{ http::status::ok, req.version() };
+	res.set(http::field::content_type, "application/json; charset=utf-8");
 
-	std::string body = req.body();
-
-	// 简单解析：这里假设表单格式
-	std::string username, password;
-
-	// 解析 username=xxx&password=xxx
-	auto uname_pos = body.find("username=");
-	auto pwd_pos = body.find("password=");
-
-	if (uname_pos != std::string::npos) {
-		auto end = body.find("&", uname_pos);
-		username = body.substr(uname_pos + 9, end - (uname_pos + 9));
+	try {
+		// 解析 JSON 请求体
+		auto json_body = json::parse(req.body());
+		std::string username = json_body.value("username", "");
+		std::string password = json_body.value("password", "");
+		printf("Received login request: username=%s, password=%s\n", username.c_str(), password.c_str());
+		// 硬编码验证（后续接入数据库）
+		if (g_db.is_connected())
+		{
+			printf("数据库连接成功，查询用户中...\n");
+			auto result = g_db.query_prepared(
+				"SELECT id, password FROM users WHERE username = ?",
+				username
+			);
+			if (result.rows().empty())
+				res.body() = R"({"success": false, "message": "用户名不存在"})";
+			else {
+				printf("查询数据库成功，验证密码中...\n");
+				std::string stored_password = result.rows()[0][1].as_string();
+				printf("数据库中存储的密码: %s\n", stored_password.c_str());
+				printf("用户输入的密码: %s\n", password.c_str());
+				if (password == stored_password) {
+					for (int i = 0; i < 100; i++)
+						printf("用数据库了!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+					std::string session_id = "session_" + std::to_string(time(nullptr));
+					res.set(http::field::set_cookie, "session_id=" + session_id + "; Path=/; HttpOnly");
+					res.body() = R"({"success": true, "message": "登录成功"})";
+				}
+				else {
+					printf("密码错误，登录失败\n");
+					res.body() = R"({"success": false, "message": "密码错误"})";
+				}
+			}
+		}
+		else {
+			res.body() = R"({"success": false, "message": "数据库连接失败"})";
+		}
 	}
-	if (pwd_pos != std::string::npos) {
-		auto end = body.find("&", pwd_pos);
-		password = body.substr(pwd_pos + 9, end - (pwd_pos + 9));
+	catch (const mysql::error_with_diagnostics& e) {
+		std::cerr << "MySQL错误: " << e.what() << std::endl;
+		std::cerr << "错误码: " << e.code() << std::endl;
+		res.body() = R"({"success": false, "message": "数据库查询失败"})";
 	}
-
-	// 2. 验证用户名密码（后续接入数据库）
-	// 目前先用硬编码演示
-	if (username == "admin" && password == "123456") {
-		// 登录成功
-
-		// 生成简单的 session ID（后续可以改用 JWT）
-		std::string session_id = "session_" + std::to_string(time(nullptr));
-
-		// 构造响应
-		http::response<http::string_body> res{ http::status::ok, req.version() };
-		res.set(http::field::content_type, "application/json");
-		res.set(http::field::set_cookie, "session_id=" + session_id + "; Path=/; HttpOnly");
-		res.body() = R"({"success": true, "message": "登录成功"})";
-		res.prepare_payload();
-		return res;
+	catch (const json::parse_error& e) {
+		std::cerr << "JSON解析错误: " << e.what() << std::endl;
+		res.body() = R"({"success": false, "message": "请求格式错误"})";
 	}
-	else {
-		// 登录失败
-		http::response<http::string_body> res{ http::status::unauthorized, req.version() };
-		res.set(http::field::content_type, "application/json");
-		res.body() = R"({"success": false, "message": "用户名或密码错误"})";
-		res.prepare_payload();
-		return res;
+	catch (const std::exception& e) {
+		std::cerr << "未知错误: " << e.what() << std::endl;
+		res.body() = R"({"success": false, "message": "服务器内部错误"})";
 	}
+	res.prepare_payload();
+	return res;
 }
-
 template<class Body, class Allocator>
 http::message_generator
 handle_register(
 	beast::string_view doc_root,
-	http::request<Body, http::basic_fields<Allocator>>&& req) {
+	http::request<Body, http::basic_fields<Allocator>>&& req)
+{
 	http::response<http::string_body> res{ http::status::ok, req.version() };
+	res.set(http::field::content_type, "application/json; charset=utf-8");
+
+	try {
+		auto json_body = json::parse(req.body());
+		std::string username = json_body.value("username", "");
+		std::string password = json_body.value("password", "");
+
+		if (g_db.is_connected())
+		{
+			auto result = g_db.query_prepared(
+				"SELECT id, password FROM users WHERE username = ?",
+				username
+			);
+			if (result.rows().empty())
+			{
+				g_db.query_prepared(
+					"INSERT INTO users (username, password) VALUES (?, ?)",
+					username, password
+				);
+				std::string session_id = "session_" + std::to_string(time(nullptr));
+				res.set(http::field::set_cookie, "session_id=" + session_id + "; Path=/; HttpOnly");
+				res.body() = R"({"success": true, "message": "注册成功"})";
+			}
+			else {
+				res.body() = R"({"success": false, "message": "用户名存在"})";
+			}
+		}
+		else
+			res.body() = R"({"success": false, "message": "数据库连接失败"})";
+	}
+	catch (const std::exception& e) {
+		res.body() = R"({"success": false, "message": "请求格式错误"})";
+	}
+
+	res.prepare_payload();
 	return res;
-};
+}
 
 template<class Body, class Allocator>
 http::message_generator
 handle_upload(
 	beast::string_view doc_root,
-	http::request<Body, http::basic_fields<Allocator>>&& req) {
+	http::request<Body, http::basic_fields<Allocator>>&& req)
+{
+	// 1. 解析文件名（从 URL 参数或自定义头获取）
+	// 这里假设前端通过 /upload?filename=xxx.mp4 传递文件名
+	std::string filename;
+	auto target = req.target();
+	auto pos = target.find("filename=");
+	if (pos != std::string::npos) {
+		filename = target.substr(pos + 9);
+		// URL 解码（处理空格、中文等）
+		// 简单处理：替换 %20 为空格
+		auto space_pos = filename.find("%20");
+		while (space_pos != std::string::npos) {
+			filename.replace(space_pos, 3, " ");
+			space_pos = filename.find("%20");
+		}
+	}
+
+	// 如果没有提供文件名，生成一个唯一文件名
+	if (filename.empty()) {
+		filename = std::to_string(time(nullptr)) + ".mp4";
+	}
+
+	// 2. 构建保存路径
+	std::string upload_dir = path_cat(std::string(doc_root), "videos");
+	std::cout << upload_dir << std::endl;
+	std::string filepath = path_cat(upload_dir, filename);
+
+	// 3. 确保 uploads 目录存在
+	boost::system::error_code ec;
+	if (!boost::filesystem::exists(upload_dir)) {
+		boost::filesystem::create_directories(upload_dir, ec);
+		if (ec) {
+			http::response<http::string_body> res{ http::status::internal_server_error, req.version() };
+			res.set(http::field::content_type, "application/json");
+			res.body() = R"({"success": false, "message": "无法创建上传目录"})";
+			res.prepare_payload();
+			return res;
+		}
+	}
+
+	// 4. 保存文件
+	FILE* fp = fopen(filepath.c_str(), "wb");
+	if (!fp) {
+		http::response<http::string_body> res{ http::status::internal_server_error, req.version() };
+		res.set(http::field::content_type, "application/json");
+		res.body() = R"({"success": false, "message": "无法打开文件"})";
+		res.prepare_payload();
+		return res;
+	}
+
+	fwrite(req.body().data(), 1, req.body().size(), fp);
+	fclose(fp);
+
+
+	// 5. 获取文件大小
+	auto file_size = boost::filesystem::file_size(filepath, ec);
+
+	// 6. 将视频信息存入数据库（可选）
+	try {
+		// 获取当前登录用户的 session_id（需要从 cookie 中解析）
+		// 这里简化处理，暂时用 1 作为用户 ID
+		int user_id = 1;
+
+		g_db.query_prepared(
+			"INSERT INTO videos (user_id, filename, filepath, size, created_at) VALUES (?, ?, ?, ?, NOW())",
+			user_id, filename, filepath, file_size
+		);
+	}
+	catch (const std::exception& e) {
+		std::cerr << "数据库插入失败: " << e.what() << std::endl;
+		// 文件已保存，但数据库记录失败，仍然返回成功但带警告
+	}
+
+	// 7. 返回成功响应
 	http::response<http::string_body> res{ http::status::ok, req.version() };
+	res.set(http::field::content_type, "application/json");
+
+	// 生成视频访问 URL
+	std::string video_url = "/videos/" + filename;
+
+	std::string response_body = R"({
+        "success": true,
+        "message": "上传成功",
+        "filename": ")" + filename + R"(",
+        "url": ")" + video_url + R"(",
+        "size": )" + std::to_string(file_size) + R"(
+    })";
+
+	res.body() = response_body;
+	res.prepare_payload();
 	return res;
-};
+}
 // Return a response for the given request.
 //
 // The concrete type of the response message (which depends on the
@@ -254,18 +534,29 @@ handle_request(
 			return res;
 		};
 
+	std::cout << "alllmethod=" << req.method_string()
+		<< " target=" << req.target()
+		<< std::endl;
+	if (req.method() == http::verb::post)
+	{
+		std::string target = std::string(req.target());
 
-	if (req.method() == http::verb::post) {
-		if (req.target() == "/login") {
+		if (target == "/login")
 			return handle_login(doc_root, std::move(req));
-		}
-		if (req.target() == "/register") {
+
+		if (target == "/register")
 			return handle_register(doc_root, std::move(req));
-		}
-		if (req.target() == "/upload") {
-			return handle_upload(doc_root, std::move(req));
-		}
-		return bad_request("Invalid upload endpoint");
+
+		// 分片上传初始化
+		if (target == "/upload/init")
+			return handle_upload_init(doc_root, std::move(req));
+
+		// 分片上传 - 关键：这里要能匹配带参数的 URL
+		if (target.find("/upload/chunk") == 0)  // ← 这个条件
+			return handle_upload_chunk(doc_root, std::move(req));
+
+		if (target == "/upload/complete")
+			return handle_upload_complete(doc_root, std::move(req));
 	}
 
 	// Make sure we can handle the method
@@ -279,10 +570,13 @@ handle_request(
 		return bad_request("Illegal request-target");
 
 	std::string path = path_cat(doc_root, req.target());
-
+	printf( "path=%s\n",path.c_str());
 	if (req.target().back() == '/') {
 		path.append("index.html");
+//		path = path_cat(path, "web");
+//		path = path_cat(path, "index.html");
 	}
+	printf("path=%s\n", path.c_str());
 	// Attempt to open the file
 	beast::error_code ec;
 	http::file_body::value_type body;
@@ -300,7 +594,9 @@ handle_request(
 	auto const size = body.size();
 
 	// Build the path to the requested file
-
+	if (req.target() == "/api/videos" && req.method() == http::verb::get) {
+		return handle_get_videos(doc_root, std::move(req));
+	}
 	// Respond to HEAD request
 	if (req.method() == http::verb::head)
 	{
@@ -314,7 +610,7 @@ handle_request(
 
 
 	// Respond to GET request
-	if (req.method() == http::verb::get) 
+	if (req.method() == http::verb::get)
 	{
 		http::response<http::file_body> res{
 			std::piecewise_construct,
@@ -546,7 +842,7 @@ run_session(
 	while (!cs.cancelled())
 	{
 		http::request_parser<http::string_body> parser;
-		parser.body_limit(10000);
+		parser.body_limit(100 * 1024 * 1024);
 
 		auto [ec, _] =
 			co_await http::async_read(stream, buffer, parser, net::as_tuple);
@@ -723,22 +1019,16 @@ main(int argc, char* argv[])
 	auto const address = net::ip::make_address(argv[1]);
 	auto const port = static_cast<unsigned short>(std::atoi(argv[2]));
 	auto const endpoint = net::ip::tcp::endpoint{ address, port };
-	std::string doc_root_str;
-	if (std::string(argv[3]) == ".") {
-		char buffer[MAX_PATH];
-		GetModuleFileNameA(NULL, buffer, MAX_PATH);
-		std::string exe_path(buffer);
-		doc_root_str = exe_path.substr(0, exe_path.find_last_of("\\/"));
-	}
-	else {
-		doc_root_str = argv[3];
-	}
-	auto const doc_root = beast::string_view{ argv[3] };
+	auto const doc_root = argv[3];
+	printf("服务器根目录: %s\n", doc_root);
 	auto const threads = std::max<int>(1, std::atoi(argv[4]));
 
 	// The io_context is required for all I/O
 	net::io_context ioc{ threads };
-
+	if (!g_db.connect("127.0.0.1", 3306, "root", "123456", "niwudile")) {
+		printf("数据库连接失败，无法启动服务器\n");
+	}
+	printf("数据库连接成功，启动服务器...\n");
 	// The SSL context is required, and holds certificates
 	ssl::context ctx{ ssl::context::tlsv12 };
 

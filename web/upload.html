@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>视频上传 - 并发分片版</title>
+    <meta charset="utf-8">
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+        }
+
+        #dropzone {
+            border: 3px dashed #ccc;
+            padding: 40px;
+            text-align: center;
+            margin: 20px 0;
+            cursor: pointer;
+        }
+
+            #dropzone.drag {
+                border-color: #00f;
+                background: #f0f0ff;
+            }
+
+        #progress-bar {
+            width: 0%;
+            height: 30px;
+            background: #4caf50;
+            transition: width 0.3s;
+        }
+
+        #progress-container {
+            width: 100%;
+            background: #eee;
+            margin: 10px 0;
+        }
+
+        #log {
+            background: #1e1e1e;
+            color: #0f0;
+            padding: 10px;
+            height: 300px;
+            overflow-y: scroll;
+            font-size: 12px;
+        }
+
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <h1>并发分片上传 (5MB/片，同时发10片)</h1>
+    <div id="dropzone">点击或拖拽视频文件到这里上传</div>
+    <div id="progress-container"><div id="progress-bar"></div></div>
+    <div id="status"></div>
+    <div id="log"></div>
+
+    <script src="upload.js"></script>
+</body>
+</html>
