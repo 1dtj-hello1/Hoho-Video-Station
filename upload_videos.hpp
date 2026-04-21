@@ -1,5 +1,4 @@
 //
-// upload_videos.hpp
 //
 
 #ifndef UPLOAD_VIDEOS_HPP
@@ -43,14 +42,13 @@ extern std::unordered_map<std::string, UploadSession> g_upload_sessions;
 extern std::mutex g_upload_mutex;
 
 // 函数声明
+bool get_user_id_from_session(const http::request<http::string_body>& req, int& user_id);
 std::string generate_upload_id();
 std::string url_decode(const std::string& str);
 std::string get_query_param(const std::string& target, const std::string& key);
-int get_user_id_from_cookie(const http::request<http::string_body>& req);
 void clean_expired_sessions();
-void start_cleanup_timer(net::io_context& ioc);
 
-// HTTP 处理函数
+// HTTP 处理函数s
 http::message_generator
 handle_upload_init(
     beast::string_view doc_root,
@@ -70,5 +68,7 @@ http::message_generator
 handle_upload_status(
     beast::string_view doc_root,
     http::request<http::string_body>&& req);
+
+void start_cleanup_timer(net::io_context& ioc);
 
 #endif // UPLOAD_VIDEOS_HPP

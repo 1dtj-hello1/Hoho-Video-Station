@@ -424,10 +424,19 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
     </CustomBuild>
   </ItemGroup>
+  <PropertyGroup>
+    <EnableUnitySupport>true</EnableUnitySupport>
+  </PropertyGroup>
   <ItemGroup>
-    <ClCompile Include="E:\Tiny\niwudile\main.cpp" />
-    <ClCompile Include="E:\Tiny\niwudile\upload_videos.cpp" />
+    <ClCompile Include="E:\Tiny\niwudile\build\CMakeFiles\niwudile.dir\Unity\unity_0_cxx.cxx" IncludeInUnityFile="false" CustomUnityFile="true" UnityFilesDirectory="E:/Tiny/niwudile/build/CMakeFiles/niwudile.dir/Unity" />
+    <ClCompile Include="E:\Tiny\niwudile\main.cpp" IncludeInUnityFile="true" CustomUnityFile="true" UnityFilesDirectory="E:/Tiny/niwudile/build/CMakeFiles/niwudile.dir/Unity" />
+    <ClCompile Include="E:\Tiny\niwudile\upload_videos.cpp" IncludeInUnityFile="true" CustomUnityFile="true" UnityFilesDirectory="E:/Tiny/niwudile/build/CMakeFiles/niwudile.dir/Unity" />
     <ClInclude Include="E:\Tiny\niwudile\upload_videos.hpp" />
+    <None Include="E:\Tiny\niwudile\config.json">
+    </None>
+    <ClInclude Include="E:\Tiny\niwudile\src\handlers\Handler.h" />
+    <Natvis Include="E:\huangjin\vcpkg\installed\x64-windows\share\nlohmann_json\nlohmann_json.natvis">
+    </Natvis>
     <Natvis Include="E:\huangjin\vcpkg\installed\x64-windows\share\boost-1.90.0\assert\boost_assert.natvis">
     </Natvis>
   </ItemGroup>

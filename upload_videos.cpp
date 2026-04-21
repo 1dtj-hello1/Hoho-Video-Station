@@ -1,7 +1,7 @@
 //
 // upload_videos.cpp
 //
-
+#include "MySQLPool.hpp"
 #include "upload_videos.hpp"
 #include <boost/filesystem.hpp>
 #include <boost/algorithm/string.hpp>
@@ -12,9 +12,49 @@
 #include <random>
 
 // 全局变量定义
+extern SimpleDatabase g_db;
 std::unordered_map<std::string, UploadSession> g_upload_sessions;
 std::mutex g_upload_mutex;
+// 验证 session 并返回 user_id
+bool get_user_id_from_session(const http::request<http::string_body>& req, int& user_id) {
+    // 从 Cookie 中获取 session_id
+    auto cookie = req[http::field::cookie];
+    std::string cookie_str(cookie.data(), cookie.size());
 
+    // 查找 session_id=xxx
+    auto pos = cookie_str.find("session_id=");
+    if (pos == std::string::npos) {
+        return false;
+    }
+
+    auto start = pos + 11;  // "session_id=" 的长度
+    auto end = cookie_str.find(";", start);
+    if (end == std::string::npos) {
+        end = cookie_str.length();
+    }
+
+    std::string session_id = cookie_str.substr(start, end - start);
+
+    // 查询数据库验证 session
+    auto result = g_db.query_prepared(
+        "SELECT user_id FROM sessions WHERE id = ? AND expires_at > NOW()",
+        session_id
+    );
+
+    if (result.rows().empty()) {
+        return false;
+    }
+
+    user_id = result.rows()[0][0].as_int64();
+
+    // 可选：刷新过期时间（滑动窗口，用户活跃就延长）
+    g_db.query_prepared(
+        "UPDATE sessions SET expires_at = DATE_ADD(NOW(), INTERVAL 1 DAY) WHERE id = ?",
+        session_id
+    );
+
+    return true;
+}
 // 外部函数声明（来自 main.cpp）
 extern std::string path_cat(beast::string_view base, beast::string_view path);
 
@@ -109,11 +149,6 @@ std::string get_query_param(const std::string& target, const std::string& key) {
     return decoded.empty() ? value : decoded;
 }
 
-// 从 Cookie 获取用户 ID（简化版）
-int get_user_id_from_cookie(const http::request<http::string_body>& req) {
-    // 实际项目中应该验证 session
-    return 1;
-}
 
 // 清理过期会话（30分钟未活动）
 void clean_expired_sessions() {
@@ -221,9 +256,9 @@ handle_upload_chunk(
             chunk_idx_str = target.substr(start, end - start);
         }
 
-        std::cout << "[分片上传] uploadId=" << upload_id << std::endl;
-        std::cout << "[分片上传] chunkIndex=" << chunk_idx_str << std::endl;
-        std::cout << "[分片上传] body size=" << req.body().size() << std::endl;
+        //std::cout << "[分片上传] uploadId=" << upload_id << std::endl;
+        //std::cout << "[分片上传] chunkIndex=" << chunk_idx_str << std::endl;
+        //std::cout << "[分片上传] body size=" << req.body().size() << std::endl;
 
         if (upload_id.empty()) {
             throw std::runtime_error("uploadId is required");
@@ -255,8 +290,8 @@ handle_upload_chunk(
             session.chunks[chunk_index] = chunk_data;
             session.last_update = time(nullptr);
 
-            std::cout << "[分片上传] 进度: " << session.received_chunks
-                << "/" << session.total_chunks << std::endl;
+            //std::cout << "[分片上传] 进度: " << session.received_chunks
+            //    << "/" << session.total_chunks << std::endl;
         }
 
         json response = {
@@ -317,9 +352,7 @@ handle_upload_complete(
         }
 
         // 构建保存路径
-        printf("保存路径: %s\n", doc_root.data());
         std::string upload_dir = path_cat(std::string(doc_root), "videos");
-        printf("保存路径: %s\n", upload_dir.c_str());
         std::string filepath = path_cat(upload_dir, session.filename);
 
         // 确保目录存在
@@ -330,7 +363,7 @@ handle_upload_complete(
                 throw std::runtime_error("Cannot create directory: " + ec.message());
             }
         }
-		printf("保存路径: %s\n", filepath.c_str());
+		//printf("保存路径: %s\n", filepath.c_str());
         // 合并文件
         FILE* file = fopen(filepath.c_str(), "wb");
         if (!file) {
@@ -366,6 +399,24 @@ handle_upload_complete(
             {"size", (long long)file_size}
         };
         res.body() = response.dump();
+        try {
+            // 获取当前登录用户的 session_id（需要从 cookie 中解析）
+            // 这里简化处理，暂时用 1 作为用户 ID
+            int use_id;
+            get_user_id_from_session(req,use_id);
+            std::cout << use_id << session.filename<<filepath<<file_size<<std::endl << std::endl<<std::endl;
+            g_db.query_prepared(
+                "INSERT INTO videos (user_id, filename, filepath, size, created_at) VALUES (?, ?, ?, ?, NOW())",
+                use_id, session.filename, filepath, file_size
+            );
+        }
+        catch (const std::exception& e) {
+            for (int i = 0; i < 1000; i++)
+                printf("数据库插入失败: ");
+            std::cerr << "数据库插入失败: " << e.what() << std::endl;
+            // 文件已保存，但数据库记录失败，仍然返回成功但带警告
+        }
+
 
     }
     catch (const std::exception& e) {

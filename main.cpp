@@ -15,12 +15,16 @@
 //------------------------------------------------------------------------------
 #include "example/common/server_certificate.hpp"
 #include "upload_videos.hpp"
-
+#include "MySQLPool.hpp"
+#include "config.h"
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/beast.hpp>
 #include <boost/beast/ssl.hpp>
 #include <boost/filesystem.hpp>
+#include <boost/uuid/uuid.hpp>
+#include <boost/uuid/uuid_generators.hpp>
+#include <boost/uuid/uuid_io.hpp>
 #include <boost/mysql.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -33,11 +37,10 @@
 #include <string>
 #include <unordered_map>
 #include <mutex>
-
+#include <queue>
 #include <thread>
 #include <vector>
 #include <ctime>
-
 
 #if defined(BOOST_ASIO_HAS_CO_AWAIT)
 namespace beast = boost::beast;
@@ -54,110 +57,13 @@ using stream_type = typename beast::tcp_stream::rebind_executor<executor_type>::
 using acceptor_type = typename net::ip::tcp::acceptor::rebind_executor<executor_type>::other;
 using json = nlohmann::json;
 // Return a reasonable mime type based on the extension of a file.
+//现在的数据库连接类，支持连接池和参数化查询
 
-class SimpleDatabase {
-private:
-	asio::io_context ioc_;
-	mysql::any_connection conn_;  // 使用 any_connection
-	bool connected_ = false;
-
-public:
-	SimpleDatabase() : conn_(ioc_) {}
-	bool is_connected() const { return connected_; }
-	bool connect(const std::string& host,
-		unsigned int port,
-		const std::string& user,
-		const std::string& pass,
-		const std::string& db) {
-		try {
-			// 新版 API：使用 connect_params 结构体
-			mysql::connect_params params;
-			params.server_address = mysql::host_and_port(host, port);
-			params.username = user;
-			params.password = pass;
-			params.database = db;
-			params.ssl = mysql::ssl_mode::require;
-
-			conn_.connect(params);
-			connected_ = true;
-			printf("[数据库] 连接成功\n");
-			return true;
-		}
-		catch (const std::exception& e) {
-			printf("[数据库] 连接失败: %s\n", e.what());
-			return false;
-		}
-	}
-
-	mysql::results query(const std::string& sql) {
-		mysql::results result;
-		conn_.execute(sql, result);
-		return result;
-	}
-	template<typename... Args>
-	mysql::results query_params(const std::string& sql, Args&&... args) {
-		mysql::results result;
-		if (connected_) {
-			conn_.execute(mysql::with_params(sql, std::forward<Args>(args)...), result);
-		}
-		return result;
-	}
-
-	// 支持多个参数的参数化查询（使用可变模板）
-	template<typename... Args>
-	mysql::results query_prepared(const std::string& sql, Args&&... args) {
-		mysql::results result;
-		if (connected_) {
-			// 使用 stringstream 构建 SQL
-			std::stringstream ss;
-			size_t start = 0;
-			size_t pos = 0;
-			size_t arg_index = 0;
-
-			// 将参数放入 tuple 以便遍历
-			auto params = std::make_tuple(std::forward<Args>(args)...);
-
-			// 遍历 SQL，替换 {} 为参数值
-			while ((pos = sql.find("?", start)) != std::string::npos) {
-				ss << sql.substr(start, pos - start);
-
-				// 获取第 arg_index 个参数并转换为字符串
-				if (arg_index < sizeof...(Args)) {
-					std::string param_str = get_param_string(params, arg_index);
-					ss << "'" << param_str << "'";
-					arg_index++;
-				}
-
-				start = pos + 1;
-			}
-			ss << sql.substr(start);
-
-			conn_.execute(ss.str(), result);
-		}
-		return result;
-	}
-
-private:
-	template<size_t I = 0, typename... Tp>
-	typename std::enable_if<I == sizeof...(Tp), std::string>::type
-		get_param_string(const std::tuple<Tp...>&, int) {
-		return "";
-	}
-
-	template<size_t I = 0, typename... Tp>
-	typename std::enable_if < I < sizeof...(Tp), std::string>::type
-		get_param_string(const std::tuple<Tp...>& t, int) {
-		std::stringstream ss;
-		ss << std::get<I>(t);
-		return ss.str();
-	}
-};
-
-// 全局数据库对象
 SimpleDatabase g_db;
 // 全局数据库对象
 
 beast::string_view
+//根据文件扩展名，返回对应的 HTTP Content-Type 响应头。
 mime_type(beast::string_view path)
 {
 	using beast::iequals;
@@ -246,40 +152,38 @@ bool verify_session(http::request<http::string_body>& req) {
 	return false;
 }
 
-template<class Body, class Allocator>
-http::message_generator
-handle_get_videos(
-	beast::string_view doc_root,
-	http::request<Body, http::basic_fields<Allocator>>&& req)
-{
-	http::response<http::string_body> res{ http::status::ok, req.version() };
-	res.set(http::field::content_type, "application/json");
-
-	try {
-		auto result = g_db.query("SELECT id, filename, filepath, size, created_at FROM videos ORDER BY created_at DESC");
-
-		json videos_array = json::array();
-		for (size_t i = 0; i < result.rows().size(); ++i) {
-			json video_obj;
-			video_obj["id"] = result.rows()[i][0].as_int64();
-			video_obj["filename"] = result.rows()[i][1].as_string();
-			video_obj["url"] += "/videos/";
-			video_obj["url"] += result.rows()[i][1].as_string();
-			video_obj["size"] = result.rows()[i][3].as_int64();
-			video_obj["created_at"] = result.rows()[i][4].as_string();
-			videos_array.push_back(video_obj);
-		}
-
-		res.body() = videos_array.dump();
-	}
-	catch (const std::exception& e) {
-		res.body() = R"({"error": "查询失败"})";
-	}
-
-	res.prepare_payload();
-	return res;
-}
-// 处理登录请求
+//template<class Body, class Allocator>
+//http::message_generator
+//handle_get_videos(
+//	beast::string_view doc_root,
+//	http::request<Body, http::basic_fields<Allocator>>&& req)
+//{
+//	http::response<http::string_body> res{ http::status::ok, req.version() };
+//	res.set(http::field::content_type, "application/json");
+//
+//	try {
+//		auto result = g_db.query_prepared("SELECT id, filename, filepath, size, created_at FROM videos ORDER BY created_at DESC");
+//		json videos_array = json::array();
+//		for (size_t i = 0; i < result.rows().size(); ++i) {
+//			json video_obj;
+//			video_obj["id"] = result.rows()[i][0].as_int64();
+//			video_obj["filename"] = result.rows()[i][1].as_string();
+//			video_obj["url"] += "/videos/";
+//			video_obj["url"] += result.rows()[i][1].as_string();
+//			video_obj["size"] = result.rows()[i][3].as_int64();
+//			video_obj["created_at"] = result.rows()[i][4].as_string();
+//			videos_array.push_back(video_obj);
+//		}
+//
+//		res.body() = videos_array.dump();
+//	}
+//	catch (const std::exception& e) {
+//		res.body() = R"({"error": "查询失败"})";
+//	}
+//
+//	res.prepare_payload();
+//	return res;
+//}
 template<class Body, class Allocator>
 http::message_generator
 handle_login(
@@ -295,7 +199,6 @@ handle_login(
 		std::string username = json_body.value("username", "");
 		std::string password = json_body.value("password", "");
 		printf("Received login request: username=%s, password=%s\n", username.c_str(), password.c_str());
-		// 硬编码验证（后续接入数据库）
 		if (g_db.is_connected())
 		{
 			printf("数据库连接成功，查询用户中...\n");
@@ -306,15 +209,22 @@ handle_login(
 			if (result.rows().empty())
 				res.body() = R"({"success": false, "message": "用户名不存在"})";
 			else {
-				printf("查询数据库成功，验证密码中...\n");
+				//printf("查询数据库成功，验证密码中...\n");
+				int user_id = result.rows()[0][0].as_int64();
 				std::string stored_password = result.rows()[0][1].as_string();
-				printf("数据库中存储的密码: %s\n", stored_password.c_str());
-				printf("用户输入的密码: %s\n", password.c_str());
+				//printf("数据库中存储的密码: %s\n", stored_password.c_str());
+				//printf("用户输入的密码: %s\n", password.c_str());
 				if (password == stored_password) {
 					for (int i = 0; i < 100; i++)
 						printf("用数据库了!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
-					std::string session_id = "session_" + std::to_string(time(nullptr));
+					boost::uuids::uuid uuid = boost::uuids::random_generator()();
+					std::string session_id = "session_" + std::to_string(time(nullptr)) + "_" + boost::uuids::to_string(uuid);
 					res.set(http::field::set_cookie, "session_id=" + session_id + "; Path=/; HttpOnly");
+					std::cout <<"session_id, user_id" <<session_id << user_id<<std::endl;
+					g_db.query_prepared(
+						"INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 1 DAY))",
+						session_id, user_id
+					);
 					res.body() = R"({"success": true, "message": "登录成功"})";
 				}
 				else {
@@ -390,105 +300,240 @@ handle_register(
 
 template<class Body, class Allocator>
 http::message_generator
-handle_upload(
+handle_get_videos(
 	beast::string_view doc_root,
 	http::request<Body, http::basic_fields<Allocator>>&& req)
 {
-	// 1. 解析文件名（从 URL 参数或自定义头获取）
-	// 这里假设前端通过 /upload?filename=xxx.mp4 传递文件名
-	std::string filename;
-	auto target = req.target();
-	auto pos = target.find("filename=");
-	if (pos != std::string::npos) {
-		filename = target.substr(pos + 9);
-		// URL 解码（处理空格、中文等）
-		// 简单处理：替换 %20 为空格
-		auto space_pos = filename.find("%20");
-		while (space_pos != std::string::npos) {
-			filename.replace(space_pos, 3, " ");
-			space_pos = filename.find("%20");
-		}
-	}
-
-	// 如果没有提供文件名，生成一个唯一文件名
-	if (filename.empty()) {
-		filename = std::to_string(time(nullptr)) + ".mp4";
-	}
-
-	// 2. 构建保存路径
-	std::string upload_dir = path_cat(std::string(doc_root), "videos");
-	std::cout << upload_dir << std::endl;
-	std::string filepath = path_cat(upload_dir, filename);
-
-	// 3. 确保 uploads 目录存在
-	boost::system::error_code ec;
-	if (!boost::filesystem::exists(upload_dir)) {
-		boost::filesystem::create_directories(upload_dir, ec);
-		if (ec) {
-			http::response<http::string_body> res{ http::status::internal_server_error, req.version() };
-			res.set(http::field::content_type, "application/json");
-			res.body() = R"({"success": false, "message": "无法创建上传目录"})";
-			res.prepare_payload();
-			return res;
-		}
-	}
-
-	// 4. 保存文件
-	FILE* fp = fopen(filepath.c_str(), "wb");
-	if (!fp) {
-		http::response<http::string_body> res{ http::status::internal_server_error, req.version() };
-		res.set(http::field::content_type, "application/json");
-		res.body() = R"({"success": false, "message": "无法打开文件"})";
-		res.prepare_payload();
-		return res;
-	}
-
-	fwrite(req.body().data(), 1, req.body().size(), fp);
-	fclose(fp);
-
-
-	// 5. 获取文件大小
-	auto file_size = boost::filesystem::file_size(filepath, ec);
-
-	// 6. 将视频信息存入数据库（可选）
-	try {
-		// 获取当前登录用户的 session_id（需要从 cookie 中解析）
-		// 这里简化处理，暂时用 1 作为用户 ID
-		int user_id = 1;
-
-		g_db.query_prepared(
-			"INSERT INTO videos (user_id, filename, filepath, size, created_at) VALUES (?, ?, ?, ?, NOW())",
-			user_id, filename, filepath, file_size
-		);
-	}
-	catch (const std::exception& e) {
-		std::cerr << "数据库插入失败: " << e.what() << std::endl;
-		// 文件已保存，但数据库记录失败，仍然返回成功但带警告
-	}
-
-	// 7. 返回成功响应
 	http::response<http::string_body> res{ http::status::ok, req.version() };
 	res.set(http::field::content_type, "application/json");
+	res.set(http::field::access_control_allow_origin, "*");
 
-	// 生成视频访问 URL
-	std::string video_url = "/videos/" + filename;
+	try {
+		// 获取分页参数
+		std::string target(req.target());
+		int page = 1;
+		int page_size = 12;  // 改成12匹配前端
 
-	std::string response_body = R"({
-        "success": true,
-        "message": "上传成功",
-        "filename": ")" + filename + R"(",
-        "url": ")" + video_url + R"(",
-        "size": )" + std::to_string(file_size) + R"(
-    })";
+		std::string page_str = get_query_param(target, "page");
+		std::string size_str = get_query_param(target, "size");
 
-	res.body() = response_body;
+		if (!page_str.empty()) page = std::stoi(page_str);
+		if (!size_str.empty()) page_size = std::stoi(size_str);
+
+		int offset = (page - 1) * page_size;
+
+		// 查询总数
+		auto count_result = g_db.query("SELECT COUNT(*) FROM videos");
+		int total = count_result.rows()[0][0].as_int64();
+
+		// 查询视频列表（带分页）
+		std::stringstream sql;
+		sql << "SELECT v.id, v.filename, v.filepath, v.size, "
+			<< "COALESCE(DATE_FORMAT(v.created_at, '%Y-%m-%d %H:%i:%s'), '') as created_at_str, "
+			<< "COALESCE(u.username, 'unknown') as username "
+			<< "FROM videos v "
+			<< "LEFT JOIN users u ON v.user_id = u.id "
+			<< "ORDER BY v.created_at DESC "
+			<< "LIMIT " << page_size << " OFFSET " << offset;
+
+		auto result = g_db.query(sql.str());
+
+		// 构建 JSON
+		json response;
+		response["code"] = 200;
+		response["message"] = "success";
+
+		json data_array = json::array();
+		for (size_t i = 0; i < result.rows().size(); ++i) {
+			json video; 
+			video["id"] = result.rows()[i][0].as_int64();
+			video["title"] = result.rows()[i][1].as_string();
+			video["videoUrl"] = "/videos/" + std::string(result.rows()[i][1].as_string());
+			video["duration"] = "00:00";
+			video["playCount"] = 0;
+			video["author"] = result.rows()[i][5].as_string();  // username
+			video["publishTime"] = result.rows()[i][4].as_string();
+			video["thumbnail"] = "";
+			video["size"] = result.rows()[i][3].as_int64();
+
+			data_array.push_back(video);
+		}
+
+		response["data"] = data_array;
+		response["pagination"] = {
+			{"page", page},
+			{"page_size", page_size},
+			{"total", total},
+			{"total_pages", (total + page_size - 1) / page_size}
+		};
+
+		res.body() = response.dump();
+	}
+	catch (const std::exception& e) {
+		std::cerr << "查询视频失败: " << e.what() << std::endl;
+		res.body() = R"({"code": 500, "message": "查询失败", "data": []})";
+	}
+
 	res.prepare_payload();
 	return res;
 }
-// Return a response for the given request.
-//
-// The concrete type of the response message (which depends on the
-// request), is type-erased in message_generator.
+
+template<class Body, class Allocator>
+http::message_generator
+handle_my_videos(
+	beast::string_view doc_root,
+	http::request<Body, http::basic_fields<Allocator>>&& req)
+{
+	http::response<http::string_body> res{ http::status::ok, req.version() };
+	res.set(http::field::content_type, "application/json");
+	res.set(http::field::access_control_allow_origin, "*");
+
+	try {
+		int user_id;
+		if (!get_user_id_from_session(req, user_id)) {
+			res.body() = R"({"code": 401, "message": "请先登录", "data": []})";
+			res.prepare_payload();
+			return res;
+		}
+
+		std::string target(req.target());
+		int page = 1, page_size = 12;
+		std::string keyword;
+
+		std::string page_str = get_query_param(target, "page");
+		std::string size_str = get_query_param(target, "size");
+		keyword = get_query_param(target, "keyword");
+
+		if (!page_str.empty()) page = std::stoi(page_str);
+		if (!size_str.empty()) page_size = std::stoi(size_str);
+
+		int offset = (page - 1) * page_size;
+
+		// 查询用户的视频列表，将 created_at 转为字符串
+		std::stringstream sql;
+		sql << "SELECT id, filename, filepath, size, "
+			<< "COALESCE(DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s'), '') as created_at_str "
+			<< "FROM videos WHERE user_id = " << user_id;
+
+		if (!keyword.empty()) {
+			sql << " AND filename LIKE '%" << keyword << "%'";
+		}
+		sql << " ORDER BY created_at DESC LIMIT " << page_size << " OFFSET " << offset;
+
+		auto result = g_db.query(sql.str());
+
+		// 查询总数
+		std::stringstream count_sql;
+		count_sql << "SELECT COUNT(*) FROM videos WHERE user_id = " << user_id;
+		if (!keyword.empty()) {
+			count_sql << " AND filename LIKE '%" << keyword << "%'";
+		}
+		auto count_result = g_db.query(count_sql.str());
+		int total = count_result.rows()[0][0].as_int64();
+
+		json response;
+		response["code"] = 200;
+		response["message"] = "success";
+
+		json data_array = json::array();
+		for (size_t i = 0; i < result.rows().size(); ++i) {
+			json video;
+			video["id"] = result.rows()[i][0].as_int64();           // id
+			video["title"] = result.rows()[i][1].as_string();       // filename
+			video["videoUrl"] = "/videos/" + std::string(result.rows()[i][1].as_string());
+			video["duration"] = "00:00";
+			video["playCount"] = 0;
+			video["author"] = "user_" + std::to_string(user_id);
+			video["publishTime"] = result.rows()[i][4].as_string();  // created_at_str (索引4)
+			video["thumbnail"] = "";
+			video["size"] = result.rows()[i][3].as_int64();          // size (索引3)
+
+			data_array.push_back(video);
+		}
+
+		response["data"] = data_array;
+		response["pagination"] = {
+			{"page", page},
+			{"page_size", page_size},
+			{"total", total},
+			{"total_pages", (total + page_size - 1) / page_size}
+		};
+
+		res.body() = response.dump();
+	}
+	catch (const std::exception& e) {
+		std::cerr << "查询我的视频失败: " << e.what() << std::endl;
+		res.body() = R"({"code": 500, "message": "查询失败", "data": []})";
+	}
+
+	res.prepare_payload();
+	return res;
+}
+
+template<class Body, class Allocator>
+http::message_generator
+handle_delete_video(
+	beast::string_view doc_root,
+	http::request<Body, http::basic_fields<Allocator>>&& req)
+{
+	http::response<http::string_body> res{ http::status::ok, req.version() };
+	res.set(http::field::content_type, "application/json");
+	res.set(http::field::access_control_allow_origin, "*");
+
+	try {
+		// 1. 获取当前登录用户
+		int user_id;
+		if (!get_user_id_from_session(req, user_id)) {
+			res.body() = R"({"code": 401, "message": "请先登录"})";
+			res.prepare_payload();
+			return res;
+		}
+
+		// 2. 获取视频 ID（从 URL 路径中提取）
+		std::string target(req.target());
+		// URL 格式: /api/videos/123
+		auto pos = target.rfind('/');
+		if (pos == std::string::npos || pos == target.length() - 1) {
+			throw std::runtime_error("Invalid video id");
+		}
+
+		int video_id = std::stoi(target.substr(pos + 1));
+
+		// 3. 查询视频信息（同时验证所有权）
+		auto result = g_db.query_prepared(
+			"SELECT filepath FROM videos WHERE id = ? AND user_id = ?",
+			video_id, user_id
+		);
+
+		if (result.rows().empty()) {
+			throw std::runtime_error("Video not found or permission denied");
+		}
+
+		std::string filepath = result.rows()[0][0].as_string();
+
+		// 4. 删除数据库记录
+		g_db.query_prepared("DELETE FROM videos WHERE id = ? AND user_id = ?", video_id, user_id);
+
+		// 5. 删除物理文件
+		boost::system::error_code ec;
+		if (boost::filesystem::exists(filepath)) {
+			boost::filesystem::remove(filepath, ec);
+			if (ec) {
+				std::cerr << "删除文件失败: " << filepath << ", error: " << ec.message() << std::endl;
+			}
+		}
+
+		res.body() = R"({"code": 200, "message": "删除成功"})";
+	}
+	catch (const std::exception& e) {
+		std::cerr << "删除视频失败: " << e.what() << std::endl;
+		res.body() = json{ {"code", 500}, {"message", e.what()} }.dump();
+	}
+
+	res.prepare_payload();
+	return res;
+}
+
 template<class Body, class Allocator>
 http::message_generator
 handle_request(
@@ -537,6 +582,8 @@ handle_request(
 	std::cout << "alllmethod=" << req.method_string()
 		<< " target=" << req.target()
 		<< std::endl;
+
+	// ========== 1. 处理 POST 请求 ==========
 	if (req.method() == http::verb::post)
 	{
 		std::string target = std::string(req.target());
@@ -547,22 +594,49 @@ handle_request(
 		if (target == "/register")
 			return handle_register(doc_root, std::move(req));
 
-		// 分片上传初始化
 		if (target == "/upload/init")
 			return handle_upload_init(doc_root, std::move(req));
 
-		// 分片上传 - 关键：这里要能匹配带参数的 URL
-		if (target.find("/upload/chunk") == 0)  // ← 这个条件
+		if (target.find("/upload/chunk") == 0)
 			return handle_upload_chunk(doc_root, std::move(req));
 
 		if (target == "/upload/complete")
 			return handle_upload_complete(doc_root, std::move(req));
 	}
 
+	// ========== 2. 处理 GET API 请求（必须在静态文件之前）==========
+	if (req.method() == http::verb::get)
+	{
+		std::string target = std::string(req.target());
+
+		// 使用 find 匹配，因为带查询参数
+		if (target.find("/api/videos") == 0)
+		{
+			return handle_get_videos(doc_root, std::move(req));
+		}
+
+		if (target.find("/api/my-videos") == 0)
+		{
+			return handle_my_videos(doc_root, std::move(req));
+		}
+	}
+
+	// DELETE 请求处理
+	if (req.method() == http::verb::delete_)
+	{
+		std::string target = std::string(req.target());
+		if (target.find("/api/videos/") == 0)
+		{
+			return handle_delete_video(doc_root, std::move(req));
+		}
+	}
+
+	// ========== 3. 处理静态文件（HTML、JS、CSS、视频等）==========
 	// Make sure we can handle the method
 	if (req.method() != http::verb::get &&
 		req.method() != http::verb::head)
 		return bad_request("Unknown HTTP-method");
+
 	// Request path must be absolute and not contain "..".
 	if (req.target().empty() ||
 		req.target()[0] != '/' ||
@@ -570,13 +644,13 @@ handle_request(
 		return bad_request("Illegal request-target");
 
 	std::string path = path_cat(doc_root, req.target());
-	printf( "path=%s\n",path.c_str());
+	printf("path=%s\n", path.c_str());
+
 	if (req.target().back() == '/') {
 		path.append("index.html");
-//		path = path_cat(path, "web");
-//		path = path_cat(path, "index.html");
 	}
 	printf("path=%s\n", path.c_str());
+
 	// Attempt to open the file
 	beast::error_code ec;
 	http::file_body::value_type body;
@@ -593,10 +667,6 @@ handle_request(
 	// Cache the size since we need it after the move
 	auto const size = body.size();
 
-	// Build the path to the requested file
-	if (req.target() == "/api/videos" && req.method() == http::verb::get) {
-		return handle_get_videos(doc_root, std::move(req));
-	}
 	// Respond to HEAD request
 	if (req.method() == http::verb::head)
 	{
@@ -607,7 +677,6 @@ handle_request(
 		res.keep_alive(req.keep_alive());
 		return res;
 	}
-
 
 	// Respond to GET request
 	if (req.method() == http::verb::get)
@@ -1008,25 +1077,23 @@ handle_signals(task_group& task_group)
 int
 main(int argc, char* argv[])
 {
-	// Check command line arguments.
-	if (argc != 5)
-	{
-		std::cerr << "Usage: advanced-server-flex-awaitable <address> <port> <doc_root> <threads>\n"
-			<< "Example:\n"
-			<< "dtj    advanced-server-flex-awaitable 0.0.0.0 8080 . 1\n";
-		return EXIT_FAILURE;
-	}
-	auto const address = net::ip::make_address(argv[1]);
-	auto const port = static_cast<unsigned short>(std::atoi(argv[2]));
-	auto const endpoint = net::ip::tcp::endpoint{ address, port };
-	auto const doc_root = argv[3];
-	printf("服务器根目录: %s\n", doc_root);
-	auto const threads = std::max<int>(1, std::atoi(argv[4]));
+	Config::get().load("config.json");
 
+	// 获取引用
+	auto& cfg = Config::get();
+	// Check command line arguments.
+	auto const address = net::ip::make_address(cfg.server.host);
+	auto const port = static_cast<unsigned short>(cfg.server.port);
+	auto const endpoint = net::ip::tcp::endpoint{ address, port };
+	auto const doc_root = cfg.server.doc_root;
+	auto const threads = cfg.server.threads;
 	// The io_context is required for all I/O
 	net::io_context ioc{ threads };
-	if (!g_db.connect("127.0.0.1", 3306, "root", "123456", "niwudile")) {
+	std::cout << "Starting server at " << cfg.server.host << ":" << cfg.server.port << " with doc_root=" << cfg.server.doc_root << "...\n";
+	std::cout << "Connecting to database at " << cfg.database.host << ":" << cfg.database.port << " with user=" << cfg.database.user << "...\n";
+	if (!g_db.connect(cfg.database.host, cfg.database.port, cfg.database.user, cfg.database.password, cfg.database.name, cfg.database.pool_size)) {
 		printf("数据库连接失败，无法启动服务器\n");
+		return EXIT_FAILURE; 
 	}
 	printf("数据库连接成功，启动服务器...\n");
 	// The SSL context is required, and holds certificates

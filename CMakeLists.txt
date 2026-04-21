@@ -3,6 +3,7 @@ project(niwudile)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_UNITY_BUILD ON)
 
 add_compile_definitions(_WIN32_WINNT=0x0A00)
 add_compile_definitions(BOOST_ASIO_HAS_CO_AWAIT)
@@ -14,7 +15,7 @@ find_package(Boost REQUIRED COMPONENTS system thread charconv filesystem)
 find_package(OpenSSL REQUIRED)
 find_package(nlohmann_json REQUIRED)  # header-only，不需要链接
 
-add_executable(niwudile main.cpp  "upload_videos.cpp" "upload_videos.hpp")
+add_executable(niwudile main.cpp  "upload_videos.cpp" "upload_videos.hpp" "config.json" "src/handlers/Handler.h")
 
 # 编译选项
 target_compile_options(niwudile PRIVATE
@@ -29,8 +30,10 @@ target_include_directories(niwudile PRIVATE
 
 # 链接库
 target_link_libraries(niwudile PRIVATE
+    nlohmann_json::nlohmann_json
     Boost::system
     Boost::thread
+    Boost::charconv
     Boost::charconv
     Boost::filesystem      # ⭐ 添加这一行
     OpenSSL::SSL

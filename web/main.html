@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>视频站</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+        }
+
+        /* 导航栏 */
+        .navbar {
+            background: #fff;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #ddd;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .logo {
+            font-size: 20px;
+            font-weight: bold;
+            color: #333;
+            text-decoration: none;
+        }
+
+        .nav-links a {
+            color: #555;
+            text-decoration: none;
+            margin-left: 25px;
+            font-size: 14px;
+        }
+
+            .nav-links a:hover {
+                color: #007bff;
+            }
+
+        /* 搜索框 */
+        .search-bar {
+            max-width: 600px;
+            margin: 20px auto;
+            padding: 0 20px;
+        }
+
+            .search-bar input {
+                width: 100%;
+                padding: 12px 15px;
+                font-size: 14px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                outline: none;
+            }
+
+                .search-bar input:focus {
+                    border-color: #007bff;
+                }
+
+        /* 主容器 */
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        /* 视频列表 */
+        .video-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .video-card {
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            overflow: hidden;
+            transition: box-shadow 0.2s;
+        }
+
+            .video-card:hover {
+                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            }
+
+        .video-thumb {
+            background: #2c3e50;
+            height: 160px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            font-size: 14px;
+        }
+
+        .video-info {
+            padding: 12px;
+        }
+
+        .video-title {
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 8px;
+            color: #333;
+        }
+
+        .video-meta {
+            font-size: 12px;
+            color: #888;
+            margin-bottom: 10px;
+        }
+
+        .video-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 12px;
+            border: 1px solid #ddd;
+            background: #fff;
+            cursor: pointer;
+            border-radius: 3px;
+        }
+
+            .btn-sm:hover {
+                background: #f0f0f0;
+            }
+
+        .btn-danger {
+            border-color: #dc3545;
+            color: #dc3545;
+        }
+
+            .btn-danger:hover {
+                background: #dc3545;
+                color: #fff;
+            }
+
+        /* 上传按钮 */
+        .upload-btn {
+            display: inline-block;
+            padding: 8px 16px;
+            background: #007bff;
+            color: #fff;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+            .upload-btn:hover {
+                background: #0069d9;
+            }
+
+        /* 空状态 */
+        .empty {
+            text-align: center;
+            padding: 60px 20px;
+            color: #888;
+        }
+
+        /* 页码 */
+        .pagination {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin: 30px 0;
+        }
+
+            .pagination a {
+                padding: 8px 12px;
+                border: 1px solid #ddd;
+                text-decoration: none;
+                color: #333;
+                border-radius: 4px;
+            }
+
+                .pagination a:hover {
+                    background: #f0f0f0;
+                }
+
+        /* 个人中心面板 */
+        .panel {
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+
+            .panel h3 {
+                margin-bottom: 15px;
+                padding-bottom: 10px;
+                border-bottom: 1px solid #eee;
+            }
+    </style>
+</head>
+<body>
+
+    <!-- 导航栏 -->
+    <div class="navbar">
+        <a href="/" class="logo">视频站</a>
+        <div class="nav-links">
+            <a href="#" onclick="showDiscover()">发现</a>
+            <a href="#" onclick="showProfile()">个人中心</a>
+            <a href="/upload.html" class="upload-btn">上传视频</a>
+        </div>
+    </div>
+
+    <!-- 搜索框 -->
+    <div class="search-bar">
+        <input type="text" id="searchInput" placeholder="搜索视频..." onkeyup="if(event.keyCode===13) searchVideos()">
+    </div>
+
+    <div class="container">
+        <div id="content">
+            <!-- 动态内容会加载到这里 -->
+        </div>
+    </div>
+
+    <script>
+        let currentPage = 1;
+        let currentView = 'discover';  // discover 或 profile
+
+        // 显示发现页面（视频列表）
+        async function showDiscover() {
+            currentView = 'discover';
+            currentPage = 1;
+            await loadVideos('/api/videos');
+        }
+
+        // 显示个人中心（我的视频）
+        async function showProfile() {
+            currentView = 'profile';
+            currentPage = 1;
+            await loadVideos('/api/my-videos');
+        }
+
+        // 加载视频列表
+        async function loadVideos(url) {
+            const keyword = document.getElementById('searchInput').value;
+            let fullUrl = `${url}?page=${currentPage}&size=12`;
+            if (keyword) {
+                fullUrl += `&keyword=${encodeURIComponent(keyword)}`;
+            }
+
+            try {
+                const response = await fetch(fullUrl);
+                const data = await response.json();
+
+                if (data.code === 200) {
+                    renderVideoList(data.data, currentView === 'profile');
+                    renderPagination(data.pagination);
+                } else {
+                    document.getElementById('content').innerHTML = '<div class="empty">加载失败</div>';
+                }
+            } catch (error) {
+                console.error('加载失败:', error);
+                document.getElementById('content').innerHTML = '<div class="empty">加载失败，请重试</div>';
+            }
+        }
+
+        // 渲染视频列表
+        function renderVideoList(videos, showDelete = false) {
+            if (!videos || videos.length === 0) {
+                document.getElementById('content').innerHTML = '<div class="empty">暂无视频</div>';
+                return;
+            }
+
+            let html = '<div class="video-list">';
+            for (const video of videos) {
+                html += `
+                    <div class="video-card">
+                        <div class="video-thumb">🎬 视频封面</div>
+                        <div class="video-info">
+                            <div class="video-title">${escapeHtml(video.title)}</div>
+                            <div class="video-meta">
+                                发布时间: ${video.publishTime || '未知'} |
+                                大小: ${formatSize(video.size)}
+                            </div>
+                            <div class="video-actions">
+                                <button class="btn-sm" onclick="playVideo('${video.videoUrl}')">播放</button>
+                                ${showDelete ? `<button class="btn-sm btn-danger" onclick="deleteVideo(${video.id})">删除</button>` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            html += '</div>';
+            document.getElementById('content').innerHTML = html;
+        }
+
+        // 渲染分页
+        function renderPagination(pagination) {
+            if (!pagination || pagination.total_pages <= 1) {
+                return;
+            }
+
+            let html = '<div class="pagination">';
+            for (let i = 1; i <= pagination.total_pages; i++) {
+                if (i === currentPage) {
+                    html += `<span style="padding:8px 12px;background:#007bff;color:#fff;border-radius:4px;">${i}</span>`;
+                } else {
+                    html += `<a href="#" onclick="goToPage(${i}); return false;">${i}</a>`;
+                }
+            }
+            html += '</div>';
+            document.getElementById('content').innerHTML += html;
+        }
+
+        // 跳转页码
+        function goToPage(page) {
+            currentPage = page;
+            if (currentView === 'discover') {
+                loadVideos('/api/videos');
+            } else {
+                loadVideos('/api/my-videos');
+            }
+        }
+
+        // 搜索
+        function searchVideos() {
+            currentPage = 1;
+            if (currentView === 'discover') {
+                loadVideos('/api/videos');
+            } else {
+                loadVideos('/api/my-videos');
+            }
+        }
+
+        // 播放视频
+        function playVideo(url) {
+            window.open(url, '_blank');
+        }
+
+        // 删除视频
+        async function deleteVideo(videoId) {
+            if (!confirm('确定要删除这个视频吗？')) return;
+
+            try {
+                const response = await fetch(`/api/videos/${videoId}`, {
+                    method: 'DELETE'
+                });
+                const data = await response.json();
+
+                if (data.code === 200) {
+                    alert('删除成功');
+                    showProfile();  // 刷新个人中心
+                } else {
+                    alert('删除失败: ' + data.message);
+                }
+            } catch (error) {
+                alert('删除失败');
+            }
+        }
+
+        // 工具函数
+        function escapeHtml(text) {
+            if (!text) return '';
+            return text.replace(/[&<>]/g, function (m) {
+                if (m === '&') return '&amp;';
+                if (m === '<') return '&lt;';
+                if (m === '>') return '&gt;';
+                return m;
+            });
+        }
+
+        function formatSize(bytes) {
+            if (!bytes) return '0 B';
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+        }
+
+        // 页面加载时显示发现页面
+        showDiscover();
+    </script>
+
+</body>
+</html>

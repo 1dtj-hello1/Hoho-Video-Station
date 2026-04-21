@@ -45,7 +45,7 @@
                 if (result.success) {
                     msgDiv.innerHTML = '<div class="success">注册成功！正在跳转登录页...</div>';
                     setTimeout(() => {
-                        window.location.href = '/login.html';
+                        window.location.href = '/main.html';
                     }, 1000);
                 } else {
                     msgDiv.innerHTML = '<div class="error">' + result.message + '</div>';

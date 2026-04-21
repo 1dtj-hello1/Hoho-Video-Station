@@ -1,0 +1,21 @@
+{
+	"server": {
+		"host": "0.0.0.0",
+		"port": 8080,
+		"threads": 4,
+		"doc_root": "E:/Tiny/niwudile/web"
+	},
+	"database": {
+		"host": "127.0.0.1",
+		"port": 3306,
+		"user": "root",
+		"password": "123456",
+		"name": "niwudile",
+		"pool_size": 10
+	},
+	"upload": {
+		"max_file_mb": 100,
+		"chunk_size_mb": 5,
+		"dir": "videos"
+	}
+}

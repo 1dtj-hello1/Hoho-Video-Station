@@ -1,6 +1,9 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
+    <ClCompile Include="E:\Tiny\niwudile\build\CMakeFiles\niwudile.dir\Unity\unity_0_cxx.cxx">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="E:\Tiny\niwudile\main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -12,12 +15,19 @@
     <ClInclude Include="E:\Tiny\niwudile\upload_videos.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="E:\Tiny\niwudile\src\handlers\Handler.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="E:\Tiny\niwudile\CMakeLists.txt" />
   </ItemGroup>
   <ItemGroup>
+    <Natvis Include="E:\huangjin\vcpkg\installed\x64-windows\share\nlohmann_json\nlohmann_json.natvis" />
     <Natvis Include="E:\huangjin\vcpkg\installed\x64-windows\share\boost-1.90.0\assert\boost_assert.natvis" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="E:\Tiny\niwudile\config.json" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Header Files">
